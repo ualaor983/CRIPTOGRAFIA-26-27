@@ -1,0 +1,4 @@
+# Dependencias de ejecucion.
+# Instalacion:  python -m pip install -r requirements.txt
+cryptography>=43.0
+PyQt6>=6.7

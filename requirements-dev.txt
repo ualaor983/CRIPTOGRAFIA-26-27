@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Calidad de codigo (opcional, no hay tests automatizados en este proyecto)
+ruff>=0.6
+mypy>=1.11

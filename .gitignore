@@ -1,0 +1,89 @@
+.specs/
+.claude/
+.context/
+CLAUDE.md
+AGENTS.md
+.cursor/
+.windsurf/
+.github/copilot-instructions.md
+*.spec.local.md
+
+# ---------------------------------------------------------------------------
+# Secretos y material criptografico
+# NUNCA se sube una clave privada, ni de pruebas.
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+keys/
+secrets/
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Datos de ejecucion (censos, urnas, actas, logs de auditoria)
+# ---------------------------------------------------------------------------
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+env/
+
+# Testing / calidad
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ---------------------------------------------------------------------------
+# Editores y SO
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
