@@ -1,6 +1,7 @@
 """Aleatoriedad criptografica: punto unico de bytes aleatorios del proyecto.
 
-Usa ``secrets.token_bytes`` (CSPRNG del sistema operativo), sin fuente alternativa.
+Usa ``secrets.token_bytes`` y ``secrets.randbelow`` (CSPRNG del sistema operativo),
+sin fuente alternativa.
 """
 
 from __future__ import annotations
@@ -19,3 +20,13 @@ def random_bytes(n: int) -> bytes:
     if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
         raise ValueError("n debe ser un entero positivo")
     return secrets.token_bytes(n)
+
+
+def random_below(n: int) -> int:
+    """Entero uniforme en ``[0, n)`` del CSPRNG del SO (``secrets.randbelow``).
+
+    Lanza: ValueError si ``n`` no es un ``int`` positivo (``bool`` incluido).
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+        raise ValueError("n debe ser un entero positivo")
+    return secrets.randbelow(n)
