@@ -1,8 +1,7 @@
 """AES-256-GCM sobre ``bytes``: generar clave, cifrar, descifrar y leer el nonce.
 
 Formato del dato cifrado: ``nonce (12 B) || cifrado (n B) || etiqueta (16 B)``.
-Usa ``AESGCM`` de ``cryptography``; admite datos asociados (AAD) opcionales y no
-tiene límite de tamaño propio.
+Usa ``AESGCM`` de ``cryptography``; no hay datos asociados ni límite de tamaño propio.
 """
 
 from __future__ import annotations
@@ -37,12 +36,10 @@ def generate_key() -> bytes:
     return randomness.random_bytes(KEY_SIZE)
 
 
-def encrypt(key: bytes, plaintext: bytes, *, aad: bytes = b"") -> bytes:
+def encrypt(key: bytes, plaintext: bytes) -> bytes:
     """AES-256-GCM, clave 32 B, nonce 12 B nuevo por llamada; devuelve nonce||cifrado||tag.
 
     Protege confidencialidad (salvo la longitud) e integridad del dato cifrado.
-    ``aad`` son datos asociados: se autentican pero no se cifran ni se guardan; hay que
-    darlos iguales al descifrar.
     Lanza: ValueError si ``key`` no mide 32 bytes; OverflowError (de la librería)
     si ``plaintext`` supera 2**31 - 1 bytes.
     """
@@ -50,24 +47,22 @@ def encrypt(key: bytes, plaintext: bytes, *, aad: bytes = b"") -> bytes:
     # Nonce generado aquí y no recibido: repetir (clave, nonce) en GCM revela el XOR
     # de los contenidos y permite falsificar etiquetas.
     nonce = randomness.random_bytes(NONCE_SIZE)
-    return nonce + AESGCM(key).encrypt(nonce, plaintext, aad or None)
+    return nonce + AESGCM(key).encrypt(nonce, plaintext, None)
 
 
-def decrypt(key: bytes, data: bytes, *, aad: bytes = b"") -> bytes:
+def decrypt(key: bytes, data: bytes) -> bytes:
     """Descifra nonce||cifrado||etiqueta con AES-256-GCM y devuelve el contenido.
 
-    ``aad`` debe coincidir con el usado al cifrar. No entrega nada, ni parcial, si la
-    etiqueta no verifica.
+    No entrega nada, ni parcial, si la etiqueta no verifica.
     Lanza: ValueError si ``key`` no mide 32 bytes o ``data`` menos de 28;
-    AuthenticationError si la etiqueta no verifica (clave errónea, AAD distinto o dato
-    alterado).
+    AuthenticationError si la etiqueta no verifica (clave errónea o dato alterado).
     """
     _check_key(key)
     _check_data(data)
     cipher = AESGCM(key)
     nonce = data[:NONCE_SIZE]
     try:
-        plaintext = cipher.decrypt(nonce, data[NONCE_SIZE:], aad or None)
+        plaintext = cipher.decrypt(nonce, data[NONCE_SIZE:], None)
     except InvalidTag:
         # "from None" y mensaje fijo: no se encadena la excepción ni se filtra nada.
         raise AuthenticationError(
