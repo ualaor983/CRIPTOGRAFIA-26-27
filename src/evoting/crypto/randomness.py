@@ -19,3 +19,14 @@ def random_bytes(n: int) -> bytes:
     if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
         raise ValueError("n debe ser un entero positivo")
     return secrets.token_bytes(n)
+
+
+def random_below(upper: int) -> int:
+    """Entero aleatorio uniforme en ``[0, upper)`` (``secrets.randbelow``).
+
+    Se usa para los coeficientes de los polinomios y los puntos alfa.
+    Lanza: ValueError si ``upper`` no es un ``int`` mayor que 0.
+    """
+    if isinstance(upper, bool) or not isinstance(upper, int) or upper <= 0:
+        raise ValueError("upper debe ser un entero positivo")
+    return secrets.randbelow(upper)
