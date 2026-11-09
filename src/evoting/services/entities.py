@@ -128,6 +128,8 @@ class Voter:
             options = self.codes["yes"]
         elif self.choice == borrell_rifa.NO:
             options = self.codes["no"]
+        elif self.choice == borrell_rifa.ABSTENTION:
+            options = [0]  # En blanco: la columna suma 0, como una que nadie uso
         else:
             options = [99]  # Voto nulo
         code = options[randomness.random_below(len(options))]
