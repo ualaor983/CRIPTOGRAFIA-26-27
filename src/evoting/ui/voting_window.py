@@ -7,7 +7,7 @@ se habilitan segun ``allowed_actions()``; la ventana no decide nada del dominio.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QBrush, QColor, QFont
+from PyQt6.QtGui import QBrush, QColor, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -27,7 +27,6 @@ from PyQt6.QtWidgets import (
 
 from evoting.core.errors import DomainError
 from evoting.services.election import Action, ElectionService, ElectionSnapshot, Option
-from evoting.ui.main_window import MainWindow
 from evoting.ui.theme import PUBLIC, SECRET
 
 WINDOW_TITLE = "Votación Borrell-Rifa"
@@ -68,11 +67,9 @@ class VotingWindow(QMainWindow):
     def __init__(self, service: ElectionService) -> None:
         super().__init__()
         self._service = service
-        self._aes_window: MainWindow | None = None
         self._option_values: dict[QRadioButton, Option] = {}
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(1100, 720)
-        self._build_menu()
 
         root = QWidget()
         layout = QVBoxLayout(root)
@@ -111,13 +108,6 @@ class VotingWindow(QMainWindow):
         layout.addWidget(note)
         self.setCentralWidget(root)
         self._refresh()
-
-    def _build_menu(self) -> None:
-        tools = self.menuBar().addMenu("Herramientas")
-        action = QAction("Cifrado AES", self)
-        action.setObjectName("aesAction")
-        action.triggered.connect(self._open_aes)
-        tools.addAction(action)
 
     def _build_action_bar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -240,13 +230,6 @@ class VotingWindow(QMainWindow):
         self._census_table.verticalHeader().hide()
         column.addWidget(self._census_table, stretch=1)
         return panel
-
-    def _open_aes(self) -> None:
-        if self._aes_window is None:
-            self._aes_window = MainWindow()
-        self._aes_window.show()
-        self._aes_window.raise_()
-        self._aes_window.activateWindow()
 
     def _show_notice(self, text: str, failure: bool = True) -> None:
         self._notice.setText(text)
