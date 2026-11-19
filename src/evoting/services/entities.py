@@ -1,9 +1,13 @@
-"""Entidades del sistema: SKGA, Recoleccion, Recuento y Votante.
+"""Entidades del sistema: Administrador, SKGA, Recoleccion, Recuento y Votante.
+
+Cada entidad es un ``Participant``: tiene su propio par de claves Kyber, que le
+entrega el Administrador (Entidad Certificadora) al preparar la eleccion.
 
 Formatos (diccionarios que se guardan en JSON):
 - urna:  {"alphas": [int], "control": [hex], "votes": [[int]], "result": [str] | None}
 - censo: {"V01": {"mesa": "M1" | None, "mark": hex | None}, ...}
 - codigos de voto: {"p": int, "yes": [int], "no": [int]} (p es el primo de la eleccion)
+- directorio: {"Administrador": hex, "SKGA": hex, ..., "V01": hex, ...} (claves publicas)
 """
 
 from __future__ import annotations
@@ -12,12 +16,86 @@ import hashlib
 
 from evoting.core import borrell_rifa
 from evoting.core.errors import DomainError
-from evoting.crypto import randomness
+from evoting.crypto import kyber, primes, randomness
 from evoting.services import sealing
 
 
-class Skga:
+class Participant:
+    """Quien participa en la eleccion: tiene un nombre y su propio par de claves Kyber."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.public_key = b""
+        self._secret_key = b""  # Solo la tiene este objeto: nadie mas la guarda.
+
+    def receive_keys(self, public_key: bytes, secret_key: bytes) -> None:
+        """Recibe su par del Administrador.
+
+        La entrega es por un canal seguro fuera de la red (en persona, como el DNIe):
+        aun no hay ninguna clave con la que cifrarla.
+        """
+        self.public_key = public_key
+        self._secret_key = secret_key
+
+
+class Administrator(Participant):
+    """Administrador y Entidad Certificadora: parametros publicos, censo y pares de claves."""
+
+    def __init__(self) -> None:
+        super().__init__("Administrador")
+        # Su propio par: es el unico par que guarda.
+        public_key, secret_key = kyber.generate_keypair()
+        self.receive_keys(public_key, secret_key)
+        # Directorio publico de claves publicas: nombre -> clave publica en hex.
+        self.directory: dict[str, str] = {self.name: public_key.hex()}
+
+    def generate_prime(self, bits: int) -> int:
+        """Primo p de la eleccion, nuevo cada vez que se inicializa el sistema."""
+        return primes.random_prime(bits)
+
+    def create_census(self, voter_ids: list[str], mesa_size: int) -> dict:
+        """Censo nuevo: los ``mesa_size`` primeros son la mesa (M1, M2...); nadie ha votado."""
+        census = {}
+        for position, voter_id in enumerate(voter_ids):
+            if position < mesa_size:
+                mesa = f"M{position + 1}"
+            else:
+                mesa = None
+            census[voter_id] = {"mesa": mesa, "mark": None}
+        return census
+
+    def create_vote_codes(self, p: int, size: int) -> dict:
+        """Primo p y conjuntos publicos C_Si y C_No, con ``size`` valores cada uno.
+
+        Devuelve {"p": int, "yes": [int], "no": [int]}: valores en [1, p), todos distintos.
+        """
+        values = []
+        while len(values) < 2 * size:
+            candidate = randomness.random_below(p)
+            if candidate != 0 and candidate not in values:
+                values.append(candidate)
+        return {
+            "p": p,
+            "yes": values[:size],
+            "no": values[size:]
+        }
+
+    def issue_keys(self, participant: Participant) -> None:
+        """Crea el par de ``participant``, se lo entrega y publica su clave publica.
+
+        La clave privada solo existe en esta variable local: al terminar el metodo,
+        el Administrador ya no la tiene. Lo unico que anota es la clave publica.
+        """
+        public_key, secret_key = kyber.generate_keypair()
+        participant.receive_keys(public_key, secret_key)
+        self.directory[participant.name] = public_key.hex()
+
+
+class Skga(Participant):
     """Genera Kb con las aportaciones de la mesa e inicializa la urna."""
+
+    def __init__(self) -> None:
+        super().__init__("SKGA")
 
     def generate_kb(self, contributions: list[bytes]) -> bytes:
         """Kb = SHA-256(aleatorio || aportaciones de la mesa): 32 bytes."""
@@ -38,16 +116,24 @@ class Skga:
         }
 
 
-class Collector:
+class Collector(Participant):
     """Recoleccion: atiende a cada votante y escribe voto, control y marca."""
 
-    def __init__(self, kb: bytes, urn: dict, census: dict, p: int) -> None:
+    def __init__(self) -> None:
+        super().__init__("Recoleccion")
+        self._kb = b""
+        self.urn: dict = {}
+        self.census: dict = {}
+        self._p = 0
+        # votante -> (polinomio, columna) mientras su voto esta a medias.
+        self._pending: dict[str, tuple[list[int], int]] = {}
+
+    def prepare(self, kb: bytes, urn: dict, census: dict, p: int) -> None:
+        """Recibe Kb (del SKGA), la urna, el censo y el primo p, y queda lista para votar."""
         self._kb = kb
         self.urn = urn
         self.census = census
         self._p = p
-        # votante -> (polinomio, columna) mientras su voto esta a medias.
-        self._pending: dict[str, tuple[list[int], int]] = {}
 
     def start_vote(self, voter_id: str) -> dict:
         """Comprueba el censo y elige columna libre y polinomio; devuelve el mensaje.
@@ -99,8 +185,11 @@ class Collector:
         self.census[voter_id]["mark"] = sealing.seal(self._kb, column)
 
 
-class Counter:
+class Counter(Participant):
     """Recuento: descifra el control, resta y publica el resultado por columna."""
+
+    def __init__(self) -> None:
+        super().__init__("Recuento")
 
     def count(self, kb: bytes, urn: dict, codes: dict) -> list[str]:
         """Escribe en ``urn["result"]`` y devuelve la interpretacion de cada columna."""
@@ -114,22 +203,25 @@ class Counter:
         return result
 
 
-class Voter:
+class Voter(Participant):
     """Votante: responde con p(alfa_h) + c y guarda su recibo para verificar."""
 
-    def __init__(self, voter_id: str, choice: str, codes: dict) -> None:
+    def __init__(self, voter_id: str, codes: dict) -> None:
+        super().__init__(voter_id)
         self.voter_id = voter_id
         self.codes = codes  # p, C_Si y C_No publicados por el Administrador
-        self.choice = choice  # borrell_rifa.YES, borrell_rifa.NO u otro (voto nulo)
         self.receipt: dict | None = None
 
-    def answer(self, request: dict) -> int:
-        """Calcula su respuesta a partir del mensaje de la recoleccion y guarda el recibo."""
-        if self.choice == borrell_rifa.YES:
+    def answer(self, request: dict, choice: str) -> int:
+        """Calcula su respuesta a partir del mensaje de la recoleccion y guarda el recibo.
+
+        ``choice``: borrell_rifa.YES, borrell_rifa.NO, borrell_rifa.ABSTENTION u otro (nulo).
+        """
+        if choice == borrell_rifa.YES:
             options = self.codes["yes"]
-        elif self.choice == borrell_rifa.NO:
+        elif choice == borrell_rifa.NO:
             options = self.codes["no"]
-        elif self.choice == borrell_rifa.ABSTENTION:
+        elif choice == borrell_rifa.ABSTENTION:
             options = [0]  # En blanco: la columna suma 0, como una que nadie uso
         else:
             options = [99]  # Voto nulo

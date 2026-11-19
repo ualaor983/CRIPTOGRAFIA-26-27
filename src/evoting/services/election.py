@@ -1,6 +1,8 @@
 """Ciclo completo de una eleccion: preparacion, votacion, cierre y recuento.
 
 Todo mensaje entre entidades pasa por un ``Channel`` cifrado con AES-GCM.
+Al preparar, el Administrador (Entidad Certificadora) da a cada participante
+su par de claves Kyber y publica las claves publicas en el directorio.
 """
 
 from __future__ import annotations
@@ -11,9 +13,9 @@ from pathlib import Path
 
 from evoting.core import borrell_rifa
 from evoting.core.errors import DomainError
-from evoting.crypto import primes, randomness
+from evoting.crypto import randomness
 from evoting.services.channel import Channel
-from evoting.services.entities import Collector, Counter, Skga, Voter
+from evoting.services.entities import Administrator, Collector, Counter, Skga, Voter
 from evoting.storage import json_files
 
 VOTERS: int = 10
@@ -87,35 +89,6 @@ class ElectionSnapshot:
     result: ResultView | None
 
 
-def create_census(voter_ids: list[str]) -> dict:
-    """Censo nuevo: los MESA primeros son la mesa (M1..M4); nadie ha votado."""
-    census = {}
-    for position, voter_id in enumerate(voter_ids):
-        if position < MESA:
-            mesa = f"M{position + 1}"
-        else:
-            mesa = None
-        census[voter_id] = {"mesa": mesa, "mark": None}
-    return census
-
-
-def create_vote_codes(p: int, size: int = CODES_PER_OPTION) -> dict:
-    """Administrador: primo p y conjuntos publicos C_Si y C_No, con ``size`` valores cada uno.
-
-    Devuelve {"p": int, "yes": [int], "no": [int]}: valores en [1, p), todos distintos.
-    """
-    values = []
-    while len(values) < 2 * size:
-        candidate = randomness.random_below(p)
-        if candidate != 0 and candidate not in values:
-            values.append(candidate)
-    return {
-        "p": p,
-        "yes": values[:size],
-        "no": values[size:]
-    }
-
-
 def _transmit(channel: Channel, message: dict) -> dict:
     return channel.receive(channel.send(message))
 
@@ -127,16 +100,21 @@ class ElectionService:
         self._urn_path = data_dir / "urna.json"
         self._census_path = data_dir / "censo.json"
         self._codes_path = data_dir / "codigos.json"
+        self._directory_path = data_dir / "directorio.json"
         self._phase = NO_ELECTION
         self._kb = b""  # La Kb que guarda el SKGA hasta entregarla al Recuento.
         self._urn: dict = {}
         self._census: dict = {}
         self._codes: dict = {}
-        self._collector: Collector | None = None
+        self._directory: dict[str, str] = {}  # Claves publicas: lo que publica la CA.
+        self._admin: Administrator | None = None  # Guarda su propio par y el directorio.
+        self._skga = Skga()
+        self._collector = Collector()
+        self._counter = Counter()
         self._voters: dict[str, Voter] = {}
 
     def prepare(self, voter_ids: list[str] | None = None) -> None:
-        """Crea censo, codigos, Kb y urna, y abre la votacion.
+        """Crea p, censo, codigos, pares de claves, Kb y urna, y abre la votacion.
 
         Sin ``voter_ids`` usa V01..V10. Lanza: DomainError si ya hay una eleccion.
         """
@@ -145,12 +123,19 @@ class ElectionService:
             voter_ids = [f"V{number:02d}" for number in range(1, VOTERS + 1)]
 
         # 1. Administrador: primo p nuevo en cada eleccion, censo y codigos publicos.
-        p = primes.random_prime(PRIME_BITS)
-        census = create_census(voter_ids)
-        codes = create_vote_codes(p)
+        admin = Administrator()
+        p = admin.generate_prime(PRIME_BITS)
+        census = admin.create_census(voter_ids, MESA)
+        codes = admin.create_vote_codes(p, CODES_PER_OPTION)
 
-        # 2. Mesa -> SKGA: aportaciones; el SKGA genera Kb e inicializa la urna.
-        skga = Skga()
+        # 2. Administrador como Entidad Certificadora: crea el par de cada participante,
+        #    se lo entrega y publica su clave publica. No guarda ninguna clave privada.
+        skga, collector, counter = Skga(), Collector(), Counter()
+        voters = {voter_id: Voter(voter_id, codes) for voter_id in voter_ids}
+        for participant in [skga, collector, counter, *voters.values()]:
+            admin.issue_keys(participant)
+
+        # 3. Mesa -> SKGA: aportaciones; el SKGA genera Kb e inicializa la urna.
         contributions = []
         for entry in census.values():
             if entry["mesa"] is not None:
@@ -160,12 +145,15 @@ class ElectionService:
         kb = skga.generate_kb(contributions)
         urn = skga.init_urn(kb, len(voter_ids), p)
 
-        # 3. SKGA -> Recoleccion: Kb.
+        # 4. SKGA -> Recoleccion: Kb.
         message = _transmit(Channel("SKGA", "Recoleccion"), {"kb": kb.hex()})
-        self._collector = Collector(bytes.fromhex(message["kb"]), urn, census, p)
+        collector.prepare(bytes.fromhex(message["kb"]), urn, census, p)
 
         self._kb, self._urn, self._census, self._codes = kb, urn, census, codes
-        self._voters = {}
+        self._admin, self._skga, self._collector, self._counter = admin, skga, collector, counter
+        self._voters = voters
+        self._directory = admin.directory
+        self._publish(self._directory_path, self._directory)
         self._publish(self._codes_path, codes)
         self._publish(self._census_path, census)
         self._publish(self._urn_path, urn)
@@ -177,13 +165,13 @@ class ElectionService:
         Lanza: DomainError si la votacion no esta abierta o el votante no puede votar.
         """
         self._require(OPEN)
-        voter = Voter(voter_id, choice, self._codes)
+        offer = self._collector.start_vote(voter_id)  # comprueba antes el censo
+        voter = self._voters[voter_id]
         to_voter = Channel("Recoleccion", voter_id)
         to_collector = Channel(voter_id, "Recoleccion")
-        request = _transmit(to_voter, self._collector.start_vote(voter_id))
-        reply = _transmit(to_collector, {"answer": voter.answer(request)})
+        request = _transmit(to_voter, offer)
+        reply = _transmit(to_collector, {"answer": voter.answer(request, choice)})
         self._collector.finish_vote(voter_id, reply["answer"])
-        self._voters[voter_id] = voter
         self._publish(self._urn_path, self._urn)
         self._publish(self._census_path, self._census)
 
@@ -199,7 +187,7 @@ class ElectionService:
         """
         self._require(CLOSED)
         message = _transmit(Channel("SKGA", "Recuento"), {"kb": self._kb.hex()})
-        result = Counter().count(bytes.fromhex(message["kb"]), self._urn, self._codes)
+        result = self._counter.count(bytes.fromhex(message["kb"]), self._urn, self._codes)
         self._publish(self._urn_path, self._urn)
         self._phase = COUNTED
         return result
@@ -210,7 +198,7 @@ class ElectionService:
         Lanza: DomainError si aun no hay recuento, no ha votado o la urna no se puede leer.
         """
         self._require(COUNTED)
-        if voter_id not in self._voters:
+        if voter_id not in self._voters or self._voters[voter_id].receipt is None:
             raise DomainError("Ese votante no tiene recibo.")
         try:
             return self._voters[voter_id].verify(json_files.load(self._urn_path))
@@ -227,7 +215,9 @@ class ElectionService:
 
     def receipt_ids(self) -> tuple[str, ...]:
         """Votantes que han votado y pueden verificar."""
-        return tuple(sorted(self._voters))
+        return tuple(
+            sorted(voter_id for voter_id, voter in self._voters.items() if voter.receipt)
+        )
 
     def view(self) -> ElectionSnapshot:
         """Vista publica de la eleccion. Lanza: DomainError si no hay eleccion."""
