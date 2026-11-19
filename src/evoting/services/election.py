@@ -1,8 +1,9 @@
 """Ciclo completo de una eleccion: preparacion, votacion, cierre y recuento.
 
-Todo mensaje entre entidades pasa por un ``Channel`` cifrado con AES-GCM.
-Al preparar, el Administrador (Entidad Certificadora) da a cada participante
-su par de claves Kyber y publica las claves publicas en el directorio.
+Todo mensaje entre entidades pasa por un ``Channel`` cifrado con AES-GCM cuya
+clave transmite Kyber. Al preparar, el Administrador (Entidad Certificadora) da
+a cada participante su par de claves Kyber y publica las claves publicas en el
+directorio; el emisor de cada comunicacion toma de ahi la clave del receptor.
 """
 
 from __future__ import annotations
@@ -15,7 +16,14 @@ from evoting.core import borrell_rifa
 from evoting.core.errors import DomainError
 from evoting.crypto import randomness
 from evoting.services.channel import Channel
-from evoting.services.entities import Administrator, Collector, Counter, Skga, Voter
+from evoting.services.entities import (
+    Administrator,
+    Collector,
+    Counter,
+    Participant,
+    Skga,
+    Voter,
+)
 from evoting.storage import json_files
 
 VOTERS: int = 10
@@ -89,8 +97,20 @@ class ElectionSnapshot:
     result: ResultView | None
 
 
-def _transmit(channel: Channel, message: dict) -> dict:
-    return channel.receive(channel.send(message))
+def _transmit(
+    sender: str, receiver: Participant, directory: dict[str, str], message: dict
+) -> dict:
+    """Una comunicacion de ``sender`` a ``receiver`` con una clave AES nueva traida por Kyber.
+
+    Lanza: DomainError si el paquete o la capsula no son validos.
+    """
+    # Emisor: busca la clave publica del receptor y encapsula una clave AES nueva.
+    receiver_public_key = bytes.fromhex(directory[receiver.name])
+    channel, capsule = Channel.open_to(sender, receiver.name, receiver_public_key)
+    packet = channel.send(message)
+    # Por la red viajan la capsula y el paquete.
+    # Receptor: desencapsula la clave con su clave privada y descifra.
+    return receiver.accept(sender, capsule).receive(packet)
 
 
 class ElectionService:
@@ -139,14 +159,14 @@ class ElectionService:
         contributions = []
         for entry in census.values():
             if entry["mesa"] is not None:
-                channel = Channel(entry["mesa"], "SKGA")
-                message = _transmit(channel, {"value": randomness.random_bytes(32).hex()})
+                value = randomness.random_bytes(32).hex()
+                message = _transmit(entry["mesa"], skga, admin.directory, {"value": value})
                 contributions.append(bytes.fromhex(message["value"]))
         kb = skga.generate_kb(contributions)
         urn = skga.init_urn(kb, len(voter_ids), p)
 
         # 4. SKGA -> Recoleccion: Kb.
-        message = _transmit(Channel("SKGA", "Recoleccion"), {"kb": kb.hex()})
+        message = _transmit(skga.name, collector, admin.directory, {"kb": kb.hex()})
         collector.prepare(bytes.fromhex(message["kb"]), urn, census, p)
 
         self._kb, self._urn, self._census, self._codes = kb, urn, census, codes
@@ -160,18 +180,18 @@ class ElectionService:
         self._phase = OPEN
 
     def cast_vote(self, voter_id: str, choice: str) -> None:
-        """Paso 4: emite el voto de ``voter_id`` por un canal propio en cada sentido.
+        """Paso 4: emite el voto de ``voter_id``; cada sentido con su propia clave Kyber.
 
         Lanza: DomainError si la votacion no esta abierta o el votante no puede votar.
         """
         self._require(OPEN)
         offer = self._collector.start_vote(voter_id)  # comprueba antes el censo
         voter = self._voters[voter_id]
-        to_voter = Channel("Recoleccion", voter_id)
-        to_collector = Channel(voter_id, "Recoleccion")
-        request = _transmit(to_voter, offer)
-        reply = _transmit(to_collector, {"answer": voter.answer(request, choice)})
-        self._collector.finish_vote(voter_id, reply["answer"])
+        collector = self._collector
+        request = _transmit(collector.name, voter, self._directory, offer)
+        answer = voter.answer(request, choice)
+        reply = _transmit(voter_id, collector, self._directory, {"answer": answer})
+        collector.finish_vote(voter_id, reply["answer"])
         self._publish(self._urn_path, self._urn)
         self._publish(self._census_path, self._census)
 
@@ -186,7 +206,7 @@ class ElectionService:
         Lanza: DomainError si no esta cerrada o el control esta alterado.
         """
         self._require(CLOSED)
-        message = _transmit(Channel("SKGA", "Recuento"), {"kb": self._kb.hex()})
+        message = _transmit(self._skga.name, self._counter, self._directory, {"kb": self._kb.hex()})
         result = self._counter.count(bytes.fromhex(message["kb"]), self._urn, self._codes)
         self._publish(self._urn_path, self._urn)
         self._phase = COUNTED

@@ -18,6 +18,7 @@ from evoting.core import borrell_rifa
 from evoting.core.errors import DomainError
 from evoting.crypto import kyber, primes, randomness
 from evoting.services import sealing
+from evoting.services.channel import Channel
 
 
 class Participant:
@@ -36,6 +37,14 @@ class Participant:
         """
         self.public_key = public_key
         self._secret_key = secret_key
+
+    def accept(self, sender: str, capsule: bytes) -> Channel:
+        """Abre su extremo de un canal: desencapsula la clave AES con su clave privada.
+
+        La clave privada no sale nunca de este objeto.
+        Lanza: DomainError si la capsula no es valida.
+        """
+        return Channel.accept(sender, self.name, self._secret_key, capsule)
 
 
 class Administrator(Participant):
