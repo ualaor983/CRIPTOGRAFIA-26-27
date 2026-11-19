@@ -3,7 +3,7 @@
 Formatos (diccionarios que se guardan en JSON):
 - urna:  {"alphas": [int], "control": [hex], "votes": [[int]], "result": [str] | None}
 - censo: {"V01": {"mesa": "M1" | None, "mark": hex | None}, ...}
-- codigos de voto: {"yes": [int], "no": [int]}
+- codigos de voto: {"p": int, "yes": [int], "no": [int]} (p es el primo de la eleccion)
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ class Skga:
         """Kb = SHA-256(aleatorio || aportaciones de la mesa): 32 bytes."""
         return hashlib.sha256(randomness.random_bytes(32) + b"".join(contributions)).digest()
 
-    def init_urn(self, kb: bytes, columns: int) -> dict:
-        """Urna nueva: ``columns`` alfas aleatorios distintos y E_Kb(0) en el control."""
+    def init_urn(self, kb: bytes, columns: int, p: int) -> dict:
+        """Urna nueva: ``columns`` alfas aleatorios distintos en Z_p y E_Kb(0) en el control."""
         alphas = []
         while len(alphas) < columns:
-            alpha = randomness.random_below(borrell_rifa.P)
+            alpha = randomness.random_below(p)
             if alpha != 0 and alpha not in alphas:
                 alphas.append(alpha)
         return {
@@ -41,10 +41,11 @@ class Skga:
 class Collector:
     """Recoleccion: atiende a cada votante y escribe voto, control y marca."""
 
-    def __init__(self, kb: bytes, urn: dict, census: dict) -> None:
+    def __init__(self, kb: bytes, urn: dict, census: dict, p: int) -> None:
         self._kb = kb
         self.urn = urn
         self.census = census
+        self._p = p
         # votante -> (polinomio, columna) mientras su voto esta a medias.
         self._pending: dict[str, tuple[list[int], int]] = {}
 
@@ -72,7 +73,7 @@ class Collector:
             raise DomainError("No quedan columnas libres para votar.")
 
         column = free[randomness.random_below(len(free))]
-        coeffs = [randomness.random_below(borrell_rifa.P) for _ in range(len(alphas) + 2)]
+        coeffs = [randomness.random_below(self._p) for _ in range(len(alphas) + 2)]
         self._pending[voter_id] = (coeffs, column)
         return {"coeffs": coeffs, "alphas": alphas, "column": column}
 
@@ -84,14 +85,14 @@ class Collector:
         if voter_id not in self._pending:
             raise DomainError("El votante no tiene un voto en curso.")
         # Viene del votante: un valor que no sea un entero romperia el recuento de todos.
-        if type(answer) is not int or not 0 <= answer < borrell_rifa.P:
+        if type(answer) is not int or not 0 <= answer < self._p:
             raise DomainError("La respuesta del votante no es valida.")
         coeffs, column = self._pending.pop(voter_id)
         alphas = self.urn["alphas"]
 
-        row = borrell_rifa.build_vote_row(coeffs, alphas, column, answer)
+        row = borrell_rifa.build_vote_row(coeffs, alphas, column, answer, self._p)
         control = sealing.unseal_row(self._kb, self.urn["control"])
-        new_control = borrell_rifa.add_to_control(control, coeffs, alphas)
+        new_control = borrell_rifa.add_to_control(control, coeffs, alphas, self._p)
 
         self.urn["votes"].append(row)
         self.urn["control"] = sealing.seal_row(self._kb, new_control)
@@ -104,7 +105,7 @@ class Counter:
     def count(self, kb: bytes, urn: dict, codes: dict) -> list[str]:
         """Escribe en ``urn["result"]`` y devuelve la interpretacion de cada columna."""
         control = sealing.unseal_row(kb, urn["control"])
-        values = borrell_rifa.tally(urn["votes"], control)
+        values = borrell_rifa.tally(urn["votes"], control, codes["p"])
         result = [
             borrell_rifa.interpret(value, codes["yes"], codes["no"])
             for value in values
@@ -118,7 +119,7 @@ class Voter:
 
     def __init__(self, voter_id: str, choice: str, codes: dict) -> None:
         self.voter_id = voter_id
-        self.codes = codes  # C_Si y C_No publicados por el Administrador
+        self.codes = codes  # p, C_Si y C_No publicados por el Administrador
         self.choice = choice  # borrell_rifa.YES, borrell_rifa.NO u otro (voto nulo)
         self.receipt: dict | None = None
 
@@ -135,7 +136,7 @@ class Voter:
         code = options[randomness.random_below(len(options))]
         alpha = request["alphas"][request["column"]]
         self.receipt = {**request, "code": code}
-        return borrell_rifa.voter_answer(request["coeffs"], alpha, code)
+        return borrell_rifa.voter_answer(request["coeffs"], alpha, code, self.codes["p"])
 
     def verify(self, urn: dict) -> bool:
         """True si su fila esta en la urna y el resultado de su columna es su opcion."""
@@ -147,8 +148,9 @@ class Voter:
         column = self.receipt["column"]
         code = self.receipt["code"]
 
-        answer = borrell_rifa.voter_answer(coeffs, alphas[column], code)
-        row = borrell_rifa.build_vote_row(coeffs, alphas, column, answer)
+        p = self.codes["p"]
+        answer = borrell_rifa.voter_answer(coeffs, alphas[column], code, p)
+        row = borrell_rifa.build_vote_row(coeffs, alphas, column, answer, p)
         if row not in urn["votes"]:
             return False
 

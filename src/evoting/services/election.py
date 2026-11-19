@@ -11,7 +11,7 @@ from pathlib import Path
 
 from evoting.core import borrell_rifa
 from evoting.core.errors import DomainError
-from evoting.crypto import randomness
+from evoting.crypto import primes, randomness
 from evoting.services.channel import Channel
 from evoting.services.entities import Collector, Counter, Skga, Voter
 from evoting.storage import json_files
@@ -19,6 +19,8 @@ from evoting.storage import json_files
 VOTERS: int = 10
 MESA: int = 4
 CODES_PER_OPTION: int = 10
+# p tiene 128 bits: todo valor de Z_p cabe en los 16 B de una celda cifrada (sealing).
+PRIME_BITS: int = 128
 DEFAULT_DATA_DIR: Path = Path("data")
 
 NO_ELECTION: str = ""
@@ -97,17 +99,18 @@ def create_census(voter_ids: list[str]) -> dict:
     return census
 
 
-def create_vote_codes(size: int = CODES_PER_OPTION) -> dict[str, list[int]]:
-    """Administrador: conjuntos publicos C_Si y C_No, con ``size`` valores cada uno.
+def create_vote_codes(p: int, size: int = CODES_PER_OPTION) -> dict:
+    """Administrador: primo p y conjuntos publicos C_Si y C_No, con ``size`` valores cada uno.
 
-    Devuelve {"yes": [int], "no": [int]}: valores en [1, P), todos distintos entre si.
+    Devuelve {"p": int, "yes": [int], "no": [int]}: valores en [1, p), todos distintos.
     """
     values = []
     while len(values) < 2 * size:
-        candidate = randomness.random_below(borrell_rifa.P)
+        candidate = randomness.random_below(p)
         if candidate != 0 and candidate not in values:
             values.append(candidate)
     return {
+        "p": p,
         "yes": values[:size],
         "no": values[size:]
     }
@@ -141,9 +144,10 @@ class ElectionService:
         if voter_ids is None:
             voter_ids = [f"V{number:02d}" for number in range(1, VOTERS + 1)]
 
-        # 1. Administrador: censo y codigos publicos.
+        # 1. Administrador: primo p nuevo en cada eleccion, censo y codigos publicos.
+        p = primes.random_prime(PRIME_BITS)
         census = create_census(voter_ids)
-        codes = create_vote_codes()
+        codes = create_vote_codes(p)
 
         # 2. Mesa -> SKGA: aportaciones; el SKGA genera Kb e inicializa la urna.
         skga = Skga()
@@ -154,11 +158,11 @@ class ElectionService:
                 message = _transmit(channel, {"value": randomness.random_bytes(32).hex()})
                 contributions.append(bytes.fromhex(message["value"]))
         kb = skga.generate_kb(contributions)
-        urn = skga.init_urn(kb, len(voter_ids))
+        urn = skga.init_urn(kb, len(voter_ids), p)
 
         # 3. SKGA -> Recoleccion: Kb.
         message = _transmit(Channel("SKGA", "Recoleccion"), {"kb": kb.hex()})
-        self._collector = Collector(bytes.fromhex(message["kb"]), urn, census)
+        self._collector = Collector(bytes.fromhex(message["kb"]), urn, census, p)
 
         self._kb, self._urn, self._census, self._codes = kb, urn, census, codes
         self._voters = {}
