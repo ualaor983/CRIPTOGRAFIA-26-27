@@ -8,6 +8,7 @@ directorio; el emisor de cada comunicacion toma de ahi la clave del receptor.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -86,10 +87,20 @@ class ResultView:
 
 
 @dataclass(frozen=True)
+class KeyRow:
+    """Entrada publica del directorio: participante y huella SHA-256 de su clave publica."""
+
+    name: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class ElectionSnapshot:
-    """Vista publica lista para mostrar: nunca Kb, claves de canal ni recibos."""
+    """Vista publica lista para mostrar: nunca Kb, claves privadas, de canal ni recibos."""
 
     phase: str
+    prime: str
+    directory: tuple[KeyRow, ...]
     alphas: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
     control_hex: tuple[str, ...]
@@ -261,8 +272,14 @@ class ElectionService:
                 str(counts.count(borrell_rifa.ABSTENTION)),
                 str(counts.count(borrell_rifa.NULL)),
             )
+        directory = tuple(
+            KeyRow(name, hashlib.sha256(bytes.fromhex(public_key)).hexdigest())
+            for name, public_key in self._directory.items()
+        )
         return ElectionSnapshot(
             self._phase,
+            str(self._codes["p"]),
+            directory,
             tuple(str(alpha) for alpha in self._urn["alphas"]),
             tuple(tuple(str(cell) for cell in row) for row in self._urn["votes"]),
             tuple(self._urn["control"]),

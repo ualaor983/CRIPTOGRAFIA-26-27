@@ -212,6 +212,10 @@ class VotingWindow(QMainWindow):
         title = QLabel("Urna")
         title.setObjectName("sectionTitle")
         column.addWidget(title)
+        self._prime_label = QLabel()
+        self._prime_label.setObjectName("primeLabel")
+        self._prime_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        column.addWidget(self._prime_label)
         self._urn_table = self._table("urnTable")
         column.addWidget(self._urn_table, stretch=1)
         return panel
@@ -229,6 +233,14 @@ class VotingWindow(QMainWindow):
         self._census_table.setHorizontalHeaderLabels(["Id", "Nombre", "Mesa", "Marca"])
         self._census_table.verticalHeader().hide()
         column.addWidget(self._census_table, stretch=1)
+        keys_title = QLabel("Directorio de claves públicas (Kyber)")
+        keys_title.setObjectName("sectionTitle")
+        column.addWidget(keys_title)
+        self._keys_table = self._table("keysTable")
+        self._keys_table.setColumnCount(2)
+        self._keys_table.setHorizontalHeaderLabels(["Participante", "Huella SHA-256"])
+        self._keys_table.verticalHeader().hide()
+        column.addWidget(self._keys_table, stretch=1)
         return panel
 
     def _show_notice(self, text: str, failure: bool = True) -> None:
@@ -321,8 +333,10 @@ class VotingWindow(QMainWindow):
         self._empty.hide()
         phase = PHASE_TEXT.get(snapshot.phase, snapshot.phase)
         self._phase_label.setText(f"Fase: {phase}")
+        self._prime_label.setText(f"Primo p de esta elección: {snapshot.prime}")
         self._fill_urn(snapshot)
         self._fill_census(snapshot)
+        self._fill_keys(snapshot)
         self._fill_combo(self._voter_combo, self._service.voter_ids())
         receipts = self._service.receipt_ids()
         self._fill_combo(self._verify_combo, receipts)
@@ -347,6 +361,8 @@ class VotingWindow(QMainWindow):
         self._urn_table.setRowCount(0)
         self._urn_table.setColumnCount(0)
         self._census_table.setRowCount(0)
+        self._keys_table.setRowCount(0)
+        self._prime_label.clear()
         self._result_text.setText(RESULT_EMPTY)
         self._voter_combo.clear()
         self._verify_combo.clear()
@@ -387,4 +403,13 @@ class VotingWindow(QMainWindow):
             table.setItem(r, 3, mark)
         for column in range(3):
             table.resizeColumnToContents(column)
+        table.horizontalHeader().setStretchLastSection(True)
+
+    def _fill_keys(self, snap: ElectionSnapshot) -> None:
+        table = self._keys_table
+        table.setRowCount(len(snap.directory))
+        for r, entry in enumerate(snap.directory):
+            table.setItem(r, 0, _cell(entry.name, mono=False))
+            table.setItem(r, 1, _cell(entry.fingerprint, PUBLIC))
+        table.resizeColumnToContents(0)
         table.horizontalHeader().setStretchLastSection(True)
